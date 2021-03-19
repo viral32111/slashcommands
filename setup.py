@@ -1,12 +1,12 @@
-from setuptools import setup
+import setuptools
 
-setup(
+setuptools.setup(
 	name = "slashcommands",
 	description = "A wrapper for the Discord Slash Commands API, to be used with discord.py.",
 	keywords = "discord slashcommands api wrapper library module development viral32111",
 
 	version = "0.1.0",
-	license = "GNU AGPLv3",
+	license = "AGPL-3.0-only",
 	url = "https://github.com/viral32111/slashcommands",
 
 	author = "viral32111",
@@ -19,8 +19,11 @@ setup(
 	classifiers = [
 		"Development Status :: 3 - Alpha",
 		"Intended Audience :: Developers",
+		"Topic :: Internet",
 		"Topic :: Software Development :: Libraries :: Python Modules",
 		"License :: OSI Approved :: GNU Affero General Public License v3",
 		"Programming Language :: Python :: 3.9",
+		"Natural Language :: English",
+		"Operating System :: OS Independent",
 	]
 )
