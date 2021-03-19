@@ -5,14 +5,21 @@ This is a wrapper around the [Discord Slash Commands API](https://discord.com/de
 ## Example
 
 ```python
-import discord, slashcommands
+import discord, slashcommands, asyncio
 
 client = discord.Client()
 print( "Loading..." )
 
 @slashcommands.new( "A simple test command to check if everything works." )
 async def test( interaction ):
-	await interaction.respond( "This is a global test, " + interaction.member[ "user" ][ "username" ] + "!" )
+	message = await interaction.respond( f"This is a test, { interaction.user.username }!" )
+	await message.followup( "Do you like my reply @everyone?", mentions = discord.AllowedMentions.none() )
+
+@slashcommands.new( "Another test command for deferred responses." )
+async def sleep( interaction ):
+	message = await interaction.think()
+	await asyncio.sleep( 5 )
+	await message.edit( "Finished!" )
 
 @client.event
 async def on_ready():
