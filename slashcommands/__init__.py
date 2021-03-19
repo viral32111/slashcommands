@@ -1,59 +1,245 @@
-import json, requests
+import json, asyncio, functools
+import requests
 
-__API_BASE_URL = "https://discord.com/api/v8/"
+_API_BASE_URL = "https://discord.com/api/v8/"
+
+# discord.com/developers/docs/interactions/slash-commands#interaction-response-interactionresponsetype
+_INTERACTION_RESPONSE_MESSAGE = 4
+_INTERACTION_RESPONSE_DEFER = 5
 
 _commandsSetup = { "global": {}, "guild": {} }
 _commandsLookup = {}
 _commandMetadata = None
 _applicationID = None
 _applicationToken = None
+_eventLoop = None
+_allowedMentions = None
 
 async def _request( endpoint, method = "GET", data = None ):
-	global _applicationToken
+	global _applicationToken, _eventLoop
 
 	if data:
-		response = requests.request( method, __API_BASE_URL + endpoint, json = data, headers = {
+		response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, json = data, headers = {
 			"Authorization": "Bot " + _applicationToken
-		} )
+		} ) )
 	else:
-		response = requests.request( method, __API_BASE_URL + endpoint, headers = {
+		response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, headers = {
 			"Authorization": "Bot " + _applicationToken
-		} )
+		} ) )
 
 	response.raise_for_status()
 
 	if response.text:
 		return response.json()
 
+async def _allowedMentionsToDict( allowedMentions ):
+	dictAllowedMentions = {
+		"parse": [],
+		"roles": [],
+		"users": []
+	}
+
+	if allowedMentions.everyone:
+		dictAllowedMentions[ "parse" ].append( "everyone" )
+	
+	if allowedMentions.users:
+		if isinstance( allowedMentions.users, list ):
+			for userID in allowedMentions.users:
+				dictAllowedMentions[ "users" ].append( userID )
+		else:
+			dictAllowedMentions[ "parse" ].append( "users" )
+
+	if allowedMentions.roles:
+		if isinstance( allowedMentions.roles, list ):
+			for roleID in allowedMentions.roles:
+				dictAllowedMentions[ "roles" ].append( roleID )
+		else:
+			dictAllowedMentions[ "parse" ].append( "roles" )
+
+	return dictAllowedMentions
+
+class user:
+	def __init__( self, user ):
+		self.id = int( user[ "id" ] )
+		self.username = user[ "username" ]
+		self.discriminator = user[ "discriminator" ]
+		self.avatar = user[ "avatar" ]
+
+		self.publicFlags = user.get( "public_flags", None )
+		
+		if self.publicFlags:
+			self.publicFlags = int( self.publicFlags )
+
+class member:
+	def __init__( self, member ):
+		self.roleIDs = [ int( roleID ) for roleID in member[ "roles" ] ]
+		self.joinedAt = member[ "joined_at" ] # should be datetime.datetime
+		self.isDeaf = member[ "deaf" ]
+		self.isMute = member[ "mute" ]
+
+		self.nickname = member.get( "nick", None )
+		self.boostingSince = member.get( "premium_since", None )
+		self.isPending = member.get( "pending", None )
+		self.permissions = member.get( "permissions", None )
+
 class interaction:
 	def __init__( self, payload, client ):
+		self.__hasResponded = False
+		self.__hasDeferred = False
+
 		self.__type = payload[ "type" ]
 		self.__token = payload[ "token" ]
 		self.__version = payload[ "version" ]
-		
+		self.__data = payload.get( "data", None )
+		self.__member = payload.get( "member", None )
+		self.__user = payload.get( "user", None )
 
 		self.client = client
 		self.id = int( payload[ "id" ] )
-		self.data = payload.get( "data", None )
-		self.guild_id = payload.get( "guild_id", None )
-		self.channel_id = payload.get( "channel_id", None )
-		self.member = payload.get( "member", None )
-		self.user = payload.get( "user", None )
+		self.guildID = payload.get( "guild_id", None )
+		self.channelID = payload.get( "channel_id", None )
 
-		if self.guild_id:
-			self.guild_id = int( self.guild_id )
+		if self.guildID:
+			self.guildID = int( self.guildID )
 
-		if self.channel_id:
-			self.channel_id = int( self.channel_id )
-	
-	async def respond( self, content, **optional ):
+		if self.channelID:
+			self.channelID = int( self.channelID )
+
+		if self.__data:
+			self.data = interaction.data( self.__data )
+
+		if self.__member:
+			self.member = member( self.__member )
+			self.user = user( self.__member[ "user" ] )
+
+		if self.__user:
+			self.user = user( self.__user )
+
+		self.isDirectMessage = ( self.__member == None and self.__user != None )
+
+	async def respond( self, *arguments, **optional ):
+		if self.__hasResponded:
+			raise Exception( "Cannot send another original interaction response, use interaction.followup() instead." )
+
+		discordEmbeds = optional.get( "embeds", None )
+		jsonDiscordEmbeds = [ embed.to_dict() for embed in discordEmbeds ] if discordEmbeds else None
+
+		allowedMentions = optional.get( "mentions", None )
+		if allowedMentions:
+			jsonAllowedMentions = await _allowedMentionsToDict( allowedMentions )
+		elif _allowedMentions:
+			jsonAllowedMentions = await _allowedMentionsToDict( _allowedMentions )
+		else:
+			jsonAllowedMentions = None
+
 		await _request( "interactions/" + str( self.id ) + "/" + self.__token + "/callback", method = "POST", data = {
-			"type": 4, # ChannelMessageWithSource
+			"type": _INTERACTION_RESPONSE_MESSAGE,
 			"data": {
-				"content": content,
+				"tts": optional.get( "tts", False ),
+				"content": arguments[ 0 ] if len( arguments ) > 0 else None,
+				"embeds": jsonDiscordEmbeds,
+				"allowed_mentions": jsonAllowedMentions,
 				"flags": ( 64 if optional.get( "hidden", False ) else 0 )
 			}
 		} )
+
+		self.__hasResponded = True
+
+		return interaction.original( self.__token )
+
+	async def think( self, **optional ):
+		if self.__hasDeferred:
+			raise Exception( "Cannot send another deferred interaction response." )
+
+		response = await _request( "interactions/" + str( self.id ) + "/" + self.__token + "/callback", method = "POST", data = {
+			"type": _INTERACTION_RESPONSE_DEFER,
+			"data": {
+				"content": "Thinking...", # I think this is needed until the new API changes are rolled out to every client
+				"flags": ( 64 if optional.get( "hidden", False ) else 0 )
+			}
+		} )
+
+		self.__hasDeferred = True
+
+		return interaction.original( self.__token )
+
+	class data:
+		def __init__( self, data ):
+			self.id = int( data[ "id" ] )
+			self.name = data[ "name" ]
+			self.options = data.get( "options", None )
+
+	class original:
+		def __init__( self, token ):
+			self.__interactionToken = token
+
+		async def edit( self, content, **optional ):
+			discordEmbeds = optional.get( "embeds", None )
+			jsonDiscordEmbeds = [ embed.to_dict() for embed in discordEmbeds ] if discordEmbeds else None
+
+			allowedMentions = optional.get( "mentions", None )
+			if allowedMentions:
+				jsonAllowedMentions = await _allowedMentionsToDict( allowedMentions )
+			elif _allowedMentions:
+				jsonAllowedMentions = await _allowedMentionsToDict( _allowedMentions )
+			else:
+				jsonAllowedMentions = None
+
+			await _request( "webhooks/" + str( _applicationID ) + "/" + self.__interactionToken + "/messages/@original", method = "PATCH", data = {
+				"content": content,
+				"embeds": jsonDiscordEmbeds,
+				"allowed_mentions": jsonAllowedMentions
+			} )
+
+		async def delete( self ):
+			await _request( "webhooks/" + str( _applicationID ) + "/" + self.__interactionToken + "/messages/@original", method = "DELETE" )
+
+		async def followup( self, content, **optional ):
+			discordEmbeds = optional.get( "embeds", None )
+			jsonDiscordEmbeds = [ embed.to_dict() for embed in discordEmbeds ] if discordEmbeds else None
+
+			allowedMentions = optional.get( "mentions", None )
+			if allowedMentions:
+				jsonAllowedMentions = await _allowedMentionsToDict( allowedMentions )
+			elif _allowedMentions:
+				jsonAllowedMentions = await _allowedMentionsToDict( _allowedMentions )
+			else:
+				jsonAllowedMentions = None
+
+			response = await _request( "webhooks/" + str( _applicationID ) + "/" + self.__interactionToken, method = "POST", data = {
+				"content": content,
+				"embeds": jsonDiscordEmbeds,
+				"allowed_mentions": jsonAllowedMentions
+			} )
+
+			# in the future, create a msg class for all the data returned in the response
+			return interaction.followup( self.__interactionToken, int( response[ "id" ] ) )
+
+	class followup:
+		def __init__( self, token, id ):
+			self.__interactionToken = token
+			self.__messageID = id
+
+		async def edit( self, content, **optional ):
+			discordEmbeds = optional.get( "embeds", None )
+			jsonDiscordEmbeds = [ embed.to_dict() for embed in discordEmbeds ] if discordEmbeds else None
+
+			allowedMentions = optional.get( "mentions", None )
+			if allowedMentions:
+				jsonAllowedMentions = await _allowedMentionsToDict( allowedMentions )
+			elif _allowedMentions:
+				jsonAllowedMentions = await _allowedMentionsToDict( _allowedMentions )
+			else:
+				jsonAllowedMentions = None
+
+			await _request( "webhooks/" + str( _applicationID ) + "/" + self.__interactionToken + "/messages/" + str( self.__messageID ), method = "PATCH", data = {
+				"content": content,
+				"embeds": jsonDiscordEmbeds,
+				"allowed_mentions": jsonAllowedMentions
+			} )
+
+		async def delete( self ):
+			await _request( "webhooks/" + str( _applicationID ) + "/" + self.__interactionToken + "/messages/" + str( self.__messageID ), method = "DELETE" )
 
 async def _ready( payload ):
 	global _applicationID, _commandsSetup, _commandsLookup
@@ -70,6 +256,7 @@ async def _ready( payload ):
 			if metadata[ "description" ] != command[ "description" ]: # or if options are different
 				patchedCommand = await _request( "applications/" + _applicationID + "/commands/" + command[ "id" ], method = "PATCH", data = {
 					"description": metadata[ "description" ]
+					# "options": metadata[ "options" ]
 				} )
 
 			_commandsLookup[ int( command[ "id" ] ) ] = metadata[ "function" ]
@@ -85,7 +272,8 @@ async def _ready( payload ):
 		for name in existingGlobalCommands:
 			await _request( "applications/" + _applicationID + "/commands/" + existingGlobalCommands[ name ][ "id" ], method = "DELETE" )
 
-	for guildID in _commandsSetup[ "guild" ].keys():
+	commandGuildIDs = list( _commandsSetup[ "guild" ].keys() )
+	for guildID in commandGuildIDs:
 		guildCommandsResponse = await _request( "applications/" + _applicationID + "/guilds/" + str( guildID ) + "/commands" )
 		existingGuildCommands = { command[ "name" ]: command for command in guildCommandsResponse }
 
@@ -94,8 +282,9 @@ async def _ready( payload ):
 				command = existingGuildCommands.pop( name )
 
 				if metadata[ "description" ] != command[ "description" ]: # or if options are different
-					patchedCommand = await _request( "applications/" + _applicationID + + "/guilds/" + str( guildID ) + "/commands/" + command[ "id" ], method = "PATCH", data = {
+					patchedCommand = await _request( "applications/" + _applicationID + "/guilds/" + str( guildID ) + "/commands/" + command[ "id" ], method = "PATCH", data = {
 						"description": metadata[ "description" ]
+						# "options": metadata[ "options" ]
 					} )
 
 				_commandsLookup[ int( command[ "id" ] ) ] = metadata[ "function" ]
@@ -110,6 +299,12 @@ async def _ready( payload ):
 
 		for name in existingGuildCommands:
 			await _request( "applications/" + _applicationID + "/guilds/" + str( guildID ) + "/commands/" + existingGuildCommands[ name ][ "id" ], method = "DELETE" )
+
+	payloadGuildIDs = [ int( guild[ "id" ] ) for guild in payload[ "guilds" ] if int( guild[ "id" ] ) not in commandGuildIDs ]
+	for guildID in payloadGuildIDs:
+		guildCommandsResponse = await _request( "applications/" + _applicationID + "/guilds/" + str( guildID ) + "/commands" )
+		for command in guildCommandsResponse:
+			await _request( "applications/" + _applicationID + "/guilds/" + str( guildID ) + "/commands/" + command[ "id" ], method = "DELETE" )
 
 def _register( function ):
 	global _commandMetadata, _commandsSetup
@@ -131,17 +326,19 @@ def new( description, **optional ):
 
 	_commandMetadata = {
 		"description": description,
-		"options": optional.get( "options", None ),
-		"guild": optional.get( "guild", None )
+		"guild": optional.get( "guild", None ),
+		# "options": optional.get( "options", None )
 	}
 
 	return _register
 
 async def run( payload, client ):
-	global _applicationToken, _commandsLookup
+	global _applicationToken, _commandsLookup, _eventLoop
 
 	if payload[ "t" ] == "READY":
 		_applicationToken = client.http.token
+		_eventLoop = client.loop
+
 		await _ready( payload[ "d" ] )
 
 	elif payload[ "t" ] == "INTERACTION_CREATE":
@@ -151,7 +348,7 @@ async def run( payload, client ):
 		print( "APPLICATION_COMMAND_CREATE", payload[ "d" ][ "id" ], payload[ "d" ][ "name" ] )
 
 	elif payload[ "t" ] == "APPLICATION_COMMAND_UPDATE":
-		print( "APPLICATION_COMMAND_CREATE", payload[ "d" ][ "id" ], payload[ "d" ][ "name" ] )
+		print( "APPLICATION_COMMAND_UPDATE", payload[ "d" ][ "id" ], payload[ "d" ][ "name" ] )
 
 	elif payload[ "t" ] == "APPLICATION_COMMAND_DELETE":
-		print( "APPLICATION_COMMAND_CREATE", payload[ "d" ][ "id" ], payload[ "d" ][ "name" ] )
+		print( "APPLICATION_COMMAND_DELETE", payload[ "d" ][ "id" ], payload[ "d" ][ "name" ] )
