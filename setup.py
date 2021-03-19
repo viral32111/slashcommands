@@ -14,7 +14,7 @@ setuptools.setup(
 
 	python_requires = ">=3.9.2",
 	packages = [ "slashcommands" ],
-	install_requires = [ "discord.py", "requests" ],
+	install_requires = [ "discord.py", "requests", "deepdiff" ],
 
 	classifiers = [
 		"Development Status :: 3 - Alpha",

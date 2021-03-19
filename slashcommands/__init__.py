@@ -1,9 +1,10 @@
-import json, asyncio, functools
-import requests
+import asyncio, functools, enum
+import requests, deepdiff
 
 _API_BASE_URL = "https://discord.com/api/v8/"
 
 # discord.com/developers/docs/interactions/slash-commands#interaction-response-interactionresponsetype
+_INTERACTION_RESPONSE_MESSAGE_HIDDEN = 3 # DEPRECATED (will be replaced once command source and response are one single message)
 _INTERACTION_RESPONSE_MESSAGE = 4
 _INTERACTION_RESPONSE_DEFER = 5
 
@@ -58,6 +59,49 @@ async def _allowedMentionsToDict( allowedMentions ):
 
 	return dictAllowedMentions
 
+class option:
+	def __init__( self, **arguments ):
+		self.type = arguments[ "type" ].value
+		self.name = arguments[ "name" ]
+		self.description = arguments[ "description" ]
+		self.required = arguments.get( "required", False )
+		self.choices = arguments.get( "choices", None )
+		self.options = arguments.get( "options", None )
+
+	def __iter__( self ):
+		yield "type", self.type
+		yield "name", self.name
+		yield "description", self.description
+
+		if self.required:
+			yield "required", self.required
+
+		if self.choices:
+			yield "choices", [ dict( choice ) for choice in self.choices ]
+
+		if self.options:
+			yield "options", [ dict( option ) for option in self.options ]
+
+	# discord.com/developers/docs/interactions/slash-commands#applicationcommandoptiontype
+	class type( enum.Enum ):
+		subCommand = 1
+		subCommandGroup = 2
+		string = 3
+		number = 4
+		boolean = 5
+		user = 6
+		channel = 7
+		role = 8
+
+	class choice:
+		def __init__( self, name, value ):
+			self.name = name
+			self.value = value
+	
+		def __iter__( self ):
+			yield "name", self.name
+			yield "value", self.value
+
 class user:
 	def __init__( self, user ):
 		self.id = int( user[ "id" ] )
@@ -98,6 +142,7 @@ class interaction:
 		self.id = int( payload[ "id" ] )
 		self.guildID = payload.get( "guild_id", None )
 		self.channelID = payload.get( "channel_id", None )
+		self.arguments = {}
 
 		if self.guildID:
 			self.guildID = int( self.guildID )
@@ -107,6 +152,9 @@ class interaction:
 
 		if self.__data:
 			self.data = interaction.data( self.__data )
+
+			for option in self.data.options:
+				self.arguments = { option.name: option.value for option in self.data.options }
 
 		if self.__member:
 			self.member = member( self.__member )
@@ -133,7 +181,7 @@ class interaction:
 			jsonAllowedMentions = None
 
 		await _request( "interactions/" + str( self.id ) + "/" + self.__token + "/callback", method = "POST", data = {
-			"type": _INTERACTION_RESPONSE_MESSAGE,
+			"type": ( _INTERACTION_RESPONSE_MESSAGE_HIDDEN if optional.get( "hidden", False ) else _INTERACTION_RESPONSE_MESSAGE ),
 			"data": {
 				"tts": optional.get( "tts", False ),
 				"content": arguments[ 0 ] if len( arguments ) > 0 else None,
@@ -168,6 +216,22 @@ class interaction:
 			self.id = int( data[ "id" ] )
 			self.name = data[ "name" ]
 			self.options = data.get( "options", None )
+			self.arguments = None
+
+			if self.options:
+				self.options = [ interaction.data.option( option ) for option in self.options ]
+				self.arguments = { option.name: option.value for option in self.options }
+	
+		class option:
+			def __init__( self, option ):
+				self.name = option[ "name" ]
+				self.value = option.get( "value", None )
+				self.options = option.get( "options", None )
+				self.arguments = None
+
+				if self.options:
+					self.options = [ interaction.data.option( option ) for option in self.options ]
+					self.arguments = { option.name: option.value for option in self.options }
 
 	class original:
 		def __init__( self, token ):
@@ -250,21 +314,30 @@ async def _ready( payload ):
 	existingGlobalCommands = { command[ "name" ]: command for command in globalCommandsResponse }
 
 	for name, metadata in _commandsSetup[ "global" ].items():
+		commandOptions = [ dict( option ) for option in metadata[ "options" ] ] if metadata[ "options" ] else None
+		
 		if name in existingGlobalCommands.keys():
 			command = existingGlobalCommands.pop( name )
 
-			if metadata[ "description" ] != command[ "description" ]: # or if options are different
-				patchedCommand = await _request( "applications/" + _applicationID + "/commands/" + command[ "id" ], method = "PATCH", data = {
-					"description": metadata[ "description" ]
-					# "options": metadata[ "options" ]
+			if commandOptions and command.get( "options", None ):
+				hasOptionsChanged = ( len( deepdiff.DeepDiff( commandOptions, command[ "options" ], ignore_order = True ) ) > 0 )
+			elif commandOptions != command.get( "options", None ):
+				hasOptionsChanged = True
+			else:
+				hasOptionsChanged = False
+
+			if metadata[ "description" ] != command[ "description" ] or hasOptionsChanged:
+				await _request( "applications/" + _applicationID + "/commands/" + command[ "id" ], method = "PATCH", data = {
+					"description": metadata[ "description" ],
+					"options": commandOptions
 				} )
 
 			_commandsLookup[ int( command[ "id" ] ) ] = metadata[ "function" ]
 		else:
 			createdCommand = await _request( "applications/" + _applicationID + "/commands", method = "POST", data = {
 				"name": name,
-				"description": metadata[ "description" ]
-				# "options": metadata[ "options" ]
+				"description": metadata[ "description" ],
+				"options": commandOptions
 			} )
 
 			_commandsLookup[ int( createdCommand[ "id" ] ) ] = metadata[ "function" ]
@@ -278,21 +351,30 @@ async def _ready( payload ):
 		existingGuildCommands = { command[ "name" ]: command for command in guildCommandsResponse }
 
 		for name, metadata in _commandsSetup[ "guild" ][ guildID ].items():
+			commandOptions = [ dict( option ) for option in metadata[ "options" ] ] if metadata[ "options" ] else None
+	
 			if name in existingGuildCommands.keys():
 				command = existingGuildCommands.pop( name )
 
-				if metadata[ "description" ] != command[ "description" ]: # or if options are different
-					patchedCommand = await _request( "applications/" + _applicationID + "/guilds/" + str( guildID ) + "/commands/" + command[ "id" ], method = "PATCH", data = {
-						"description": metadata[ "description" ]
-						# "options": metadata[ "options" ]
+				if commandOptions and command.get( "options", None ):
+					hasOptionsChanged = ( len( deepdiff.DeepDiff( commandOptions, command[ "options" ], ignore_order = True ) ) > 0 )
+				elif commandOptions != command.get( "options", None ):
+					hasOptionsChanged = True
+				else:
+					hasOptionsChanged = False
+
+				if metadata[ "description" ] != command[ "description" ] or hasOptionsChanged:
+					await _request( "applications/" + _applicationID + "/guilds/" + str( guildID ) + "/commands/" + command[ "id" ], method = "PATCH", data = {
+						"description": metadata[ "description" ],
+						"options": commandOptions
 					} )
 
 				_commandsLookup[ int( command[ "id" ] ) ] = metadata[ "function" ]
 			else:
 				createdCommand = await _request( "applications/" + _applicationID + "/guilds/" + str( guildID ) + "/commands", method = "POST", data = {
 					"name": name,
-					"description": metadata[ "description" ]
-					# "options": metadata[ "options" ]
+					"description": metadata[ "description" ],
+					"options": commandOptions
 				} )
 
 				_commandsLookup[ int( createdCommand[ "id" ] ) ] = metadata[ "function" ]
@@ -327,7 +409,7 @@ def new( description, **optional ):
 	_commandMetadata = {
 		"description": description,
 		"guild": optional.get( "guild", None ),
-		# "options": optional.get( "options", None )
+		"options": optional.get( "options", None )
 	}
 
 	return _register
@@ -343,12 +425,3 @@ async def run( payload, client ):
 
 	elif payload[ "t" ] == "INTERACTION_CREATE":
 		await _commandsLookup[ int( payload[ "d" ][ "data" ][ "id" ] ) ]( interaction( payload[ "d" ], client ) )
-
-	elif payload[ "t" ] == "APPLICATION_COMMAND_CREATE":
-		print( "APPLICATION_COMMAND_CREATE", payload[ "d" ][ "id" ], payload[ "d" ][ "name" ] )
-
-	elif payload[ "t" ] == "APPLICATION_COMMAND_UPDATE":
-		print( "APPLICATION_COMMAND_UPDATE", payload[ "d" ][ "id" ], payload[ "d" ][ "name" ] )
-
-	elif payload[ "t" ] == "APPLICATION_COMMAND_DELETE":
-		print( "APPLICATION_COMMAND_DELETE", payload[ "d" ][ "id" ], payload[ "d" ][ "name" ] )
