@@ -5,6 +5,6 @@ jobs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/setup-python@v2
-    - with:
+      with:
         python-version: '3.9.2'
-    - run: pip install git+https://github.com/viral32111/slashcommands
+      run: pip install git+https://github.com/viral32111/slashcommands
