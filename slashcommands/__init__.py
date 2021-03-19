@@ -153,8 +153,9 @@ class interaction:
 		if self.__data:
 			self.data = interaction.data( self.__data )
 
-			for option in self.data.options:
-				self.arguments = { option.name: option.value for option in self.data.options }
+			if self.data.options:
+				for option in self.data.options:
+					self.arguments = { option.name: option.value for option in self.data.options }
 
 		if self.__member:
 			self.member = member( self.__member )
@@ -237,7 +238,7 @@ class interaction:
 		def __init__( self, token ):
 			self.__interactionToken = token
 
-		async def edit( self, content, **optional ):
+		async def edit( self, *arguments, **optional ):
 			discordEmbeds = optional.get( "embeds", None )
 			jsonDiscordEmbeds = [ embed.to_dict() for embed in discordEmbeds ] if discordEmbeds else None
 
@@ -250,7 +251,7 @@ class interaction:
 				jsonAllowedMentions = None
 
 			await _request( "webhooks/" + str( _applicationID ) + "/" + self.__interactionToken + "/messages/@original", method = "PATCH", data = {
-				"content": content,
+				"content": arguments[ 0 ] if len( arguments ) > 0 else None,
 				"embeds": jsonDiscordEmbeds,
 				"allowed_mentions": jsonAllowedMentions
 			} )
@@ -284,7 +285,7 @@ class interaction:
 			self.__interactionToken = token
 			self.__messageID = id
 
-		async def edit( self, content, **optional ):
+		async def edit( self, *arguments, **optional ):
 			discordEmbeds = optional.get( "embeds", None )
 			jsonDiscordEmbeds = [ embed.to_dict() for embed in discordEmbeds ] if discordEmbeds else None
 
@@ -297,7 +298,7 @@ class interaction:
 				jsonAllowedMentions = None
 
 			await _request( "webhooks/" + str( _applicationID ) + "/" + self.__interactionToken + "/messages/" + str( self.__messageID ), method = "PATCH", data = {
-				"content": content,
+				"content": arguments[ 0 ] if len( arguments ) > 0 else None,
 				"embeds": jsonDiscordEmbeds,
 				"allowed_mentions": jsonAllowedMentions
 			} )

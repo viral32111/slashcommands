@@ -5,7 +5,7 @@ setuptools.setup(
 	description = "A wrapper for the Discord Slash Commands API, to be used with discord.py.",
 	keywords = "discord slashcommands api wrapper library module development viral32111",
 
-	version = "0.2.0",
+	version = "1.0.0",
 	license = "AGPL-3.0-only",
 	url = "https://github.com/viral32111/slashcommands",
 
@@ -17,7 +17,7 @@ setuptools.setup(
 	install_requires = [ "discord.py", "requests", "deepdiff" ],
 
 	classifiers = [
-		"Development Status :: 3 - Alpha",
+		"Development Status :: 5 - Production/Stable",
 		"Intended Audience :: Developers",
 		"Topic :: Internet",
 		"Topic :: Software Development :: Libraries :: Python Modules",
