@@ -1,10 +1,9 @@
-import asyncio, functools, enum
+import asyncio, functools, enum, json
 import requests, deepdiff
 
 _API_BASE_URL = "https://discord.com/api/v8/"
 
 # discord.com/developers/docs/interactions/slash-commands#interaction-response-interactionresponsetype
-_INTERACTION_RESPONSE_MESSAGE_HIDDEN = 3 # DEPRECATED (will be replaced once command source and response are one single message)
 _INTERACTION_RESPONSE_MESSAGE = 4
 _INTERACTION_RESPONSE_DEFER = 5
 
@@ -16,17 +15,30 @@ _applicationToken = None
 _eventLoop = None
 _allowedMentions = None
 
-async def _request( endpoint, method = "GET", data = None ):
+async def _request( endpoint, method = "GET", data = None, files = None ):
 	global _applicationToken, _eventLoop
 
-	if data:
-		response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, json = data, headers = {
-			"Authorization": "Bot " + _applicationToken
-		} ) )
-	else:
-		response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, headers = {
-			"Authorization": "Bot " + _applicationToken
-		} ) )
+	authorizationHeader = { "Authorization": "Bot " + _applicationToken }
+
+	responseCode = 429
+	while responseCode == 429:
+		if files and data:
+			files = { f"file{ num }": ( file.filename, file.fp ) for num, file in enumerate( files ) }
+			files[ "payload_json" ] = ( None, json.dumps( data ), "application/json" )
+			response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, files = files, headers = authorizationHeader ) )
+		elif files and not data:
+			files = { f"file{ num }": ( file.filename, file.fp ) for num, file in enumerate( files ) }
+			response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, files = files, headers = authorizationHeader ) )
+		elif not files and data:
+			response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, json = data, headers = authorizationHeader ) )
+		else:
+			response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, headers = authorizationHeader ) )
+
+		responseCode = response.status_code
+
+		if responseCode == 429:
+			retryAfter = response.json()[ "retry_after" ] + 1 # add 1 second to be safe
+			await asyncio.sleep( retryAfter )
 
 	response.raise_for_status()
 
@@ -170,6 +182,10 @@ class interaction:
 		if self.__hasResponded:
 			raise Exception( "Cannot send another original interaction response, use interaction.followup() instead." )
 
+		# this will work once discord implements attachments in interation responses
+		if optional.get( "files", None ):
+			raise Exception( "Cannot send files in original interaction response (yet), only available for interaction.followup()." )
+
 		discordEmbeds = optional.get( "embeds", None )
 		jsonDiscordEmbeds = [ embed.to_dict() for embed in discordEmbeds ] if discordEmbeds else None
 
@@ -182,7 +198,7 @@ class interaction:
 			jsonAllowedMentions = None
 
 		await _request( "interactions/" + str( self.id ) + "/" + self.__token + "/callback", method = "POST", data = {
-			"type": ( _INTERACTION_RESPONSE_MESSAGE_HIDDEN if optional.get( "hidden", False ) else _INTERACTION_RESPONSE_MESSAGE ),
+			"type": _INTERACTION_RESPONSE_MESSAGE,
 			"data": {
 				"tts": optional.get( "tts", False ),
 				"content": arguments[ 0 ] if len( arguments ) > 0 else None,
@@ -190,11 +206,11 @@ class interaction:
 				"allowed_mentions": jsonAllowedMentions,
 				"flags": ( 64 if optional.get( "hidden", False ) else 0 )
 			}
-		} )
+		}, files = optional.get( "files", None ) )
 
 		self.__hasResponded = True
 
-		return interaction.original( self.__token )
+		return interaction.original( self.__token, optional.get( "hidden", False ) )
 
 	async def think( self, **optional ):
 		if self.__hasDeferred:
@@ -203,14 +219,13 @@ class interaction:
 		response = await _request( "interactions/" + str( self.id ) + "/" + self.__token + "/callback", method = "POST", data = {
 			"type": _INTERACTION_RESPONSE_DEFER,
 			"data": {
-				"content": "Thinking...", # I think this is needed until the new API changes are rolled out to every client
 				"flags": ( 64 if optional.get( "hidden", False ) else 0 )
 			}
 		} )
 
 		self.__hasDeferred = True
 
-		return interaction.original( self.__token )
+		return interaction.original( self.__token, optional.get( "hidden", False ) )
 
 	class data:
 		def __init__( self, data ):
@@ -235,8 +250,9 @@ class interaction:
 					self.arguments = { option.name: option.value for option in self.options }
 
 	class original:
-		def __init__( self, token ):
+		def __init__( self, token, isHidden ):
 			self.__interactionToken = token
+			self.__isHidden = isHidden
 
 		async def edit( self, *arguments, **optional ):
 			discordEmbeds = optional.get( "embeds", None )
@@ -257,9 +273,12 @@ class interaction:
 			} )
 
 		async def delete( self ):
+			if self.__isHidden:
+				raise Exception( "Cannot delete an ephemeral response!" )
+
 			await _request( "webhooks/" + str( _applicationID ) + "/" + self.__interactionToken + "/messages/@original", method = "DELETE" )
 
-		async def followup( self, content, **optional ):
+		async def followup( self, *arguments, **optional ):
 			discordEmbeds = optional.get( "embeds", None )
 			jsonDiscordEmbeds = [ embed.to_dict() for embed in discordEmbeds ] if discordEmbeds else None
 
@@ -272,18 +291,20 @@ class interaction:
 				jsonAllowedMentions = None
 
 			response = await _request( "webhooks/" + str( _applicationID ) + "/" + self.__interactionToken, method = "POST", data = {
-				"content": content,
+				"content": arguments[ 0 ] if len( arguments ) > 0 else None,
 				"embeds": jsonDiscordEmbeds,
-				"allowed_mentions": jsonAllowedMentions
-			} )
+				"allowed_mentions": jsonAllowedMentions,
+				"flags": ( 64 if optional.get( "hidden", False ) else 0 )
+			}, files = optional.get( "files", None ) )
 
 			# in the future, create a msg class for all the data returned in the response
-			return interaction.followup( self.__interactionToken, int( response[ "id" ] ) )
+			return interaction.followup( self.__interactionToken, int( response[ "id" ] ), optional.get( "hidden", False ) )
 
 	class followup:
-		def __init__( self, token, id ):
+		def __init__( self, token, id, isHidden ):
 			self.__interactionToken = token
 			self.__messageID = id
+			self.__isHidden = isHidden
 
 		async def edit( self, *arguments, **optional ):
 			discordEmbeds = optional.get( "embeds", None )
@@ -304,6 +325,9 @@ class interaction:
 			} )
 
 		async def delete( self ):
+			if self.__isHidden:
+				raise Exception( "Cannot delete an ephemeral response!" )
+
 			await _request( "webhooks/" + str( _applicationID ) + "/" + self.__interactionToken + "/messages/" + str( self.__messageID ), method = "DELETE" )
 
 async def _ready( payload ):
