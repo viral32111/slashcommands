@@ -138,6 +138,39 @@ class member:
 		self.isPending = member.get( "pending", None )
 		self.permissions = member.get( "permissions", None )
 
+class command:
+	def __init__( self, payload ):
+		self.__data = payload.get( "data", None )
+		self.__member = payload.get( "member", None )
+		self.__user = payload.get( "user", None )
+
+		self.id = int( payload[ "id" ] )
+		self.guildID = payload.get( "guild_id", None )
+		self.channelID = payload.get( "channel_id", None )
+		self.arguments = {}
+
+		if self.guildID:
+			self.guildID = int( self.guildID )
+
+		if self.channelID:
+			self.channelID = int( self.channelID )
+
+		if self.__data:
+			self.data = interaction.data( self.__data )
+
+			if self.data.options:
+				for option in self.data.options:
+					self.arguments = { option.name: option.value for option in self.data.options }
+
+		if self.__member:
+			self.member = member( self.__member )
+			self.user = user( self.__member[ "user" ] )
+
+		if self.__user:
+			self.user = user( self.__user )
+
+		self.isDirectMessage = ( self.__member == None and self.__user != None )
+
 class interaction:
 	def __init__( self, payload, client ):
 		self.__hasResponded = False
@@ -450,3 +483,4 @@ async def run( payload, client ):
 
 	elif payload[ "t" ] == "INTERACTION_CREATE":
 		await _commandsLookup[ int( payload[ "d" ][ "data" ][ "id" ] ) ]( interaction( payload[ "d" ], client ) )
+		return command( payload[ "d" ] )
