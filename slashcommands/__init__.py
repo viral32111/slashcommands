@@ -202,8 +202,7 @@ class interaction:
 			self.data = interaction.data( self.__data )
 
 			if self.data.options:
-				for option in self.data.options:
-					self.arguments = { option.name: option.value for option in self.data.options }
+				self.arguments = { option.name: ( option.value if option.value else option.arguments ) for option in self.data.options }
 
 		if self.__member:
 			self.member = member( self.__member )
@@ -282,7 +281,7 @@ class interaction:
 
 				if self.options:
 					self.options = [ interaction.data.option( option ) for option in self.options ]
-					self.arguments = { option.name: option.value for option in self.options }
+					self.arguments = { option.name: ( option.value if option.value else option.arguments ) for option in self.options }
 
 	class original:
 		def __init__( self, token, isHidden ):
@@ -465,8 +464,8 @@ def _register( function ):
 			raise Exception( "Commands can only have up to 25 options!" )
 
 		for option in _commandMetadata[ "options" ]:
-			if option[ "choices" ]:
-				if len( option[ "choices" ] ) > 25:
+			if option.choices:
+				if len( option.choices ) > 25:
 					raise Exception( "Command options can only have up to 25 choices!" )
 
 	if _commandMetadata[ "guild" ]:
