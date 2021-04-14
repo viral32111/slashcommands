@@ -1,4 +1,4 @@
-import asyncio, functools, enum, json
+import asyncio, functools, enum, json, re
 import requests, deepdiff
 
 _API_BASE_URL = "https://discord.com/api/v8/"
@@ -449,15 +449,43 @@ async def _ready( payload ):
 def _register( function ):
 	global _commandMetadata, _commandsSetup
 
+	commandName = function.__name__
 	_commandMetadata[ "function" ] = function
+
+	if not re.match( r'^[\w-]{1,32}$', commandName ):
+		raise Exception( "Invalid command name! Must be alphanumeric & between 1 and 32 characters." )
+
+	if len( _commandMetadata[ "description" ] ) < 1 or len( _commandMetadata[ "description" ] ) > 100:
+		raise Exception( "Invalid command description! Must be between 1 and 100 characters." )
+
+	if _commandMetadata[ "options" ]:
+		if len( _commandMetadata[ "options" ] ) > 25:
+			raise Exception( "Commands can only have up to 25 options!" )
+
+		for option in _commandMetadata[ "options" ]:
+			if option[ "choices" ]:
+				if len( option[ "choices" ] ) > 25:
+					raise Exception( "Command options can only have up to 25 choices!" )
 
 	if _commandMetadata[ "guild" ]:
 		if _commandMetadata[ "guild" ] not in _commandsSetup[ "guild" ]:
 			_commandsSetup[ "guild" ][ _commandMetadata[ "guild" ] ] = {}
 	
-		_commandsSetup[ "guild" ][ _commandMetadata[ "guild" ] ][ function.__name__ ] = _commandMetadata
+		if len( _commandsSetup[ "guild" ][ _commandMetadata[ "guild" ] ] ) >= 100:
+			raise Exception( "Cannot have more than 100 guild commands per guild." )
+
+		if commandName in _commandsSetup[ "guild" ][ _commandMetadata[ "guild" ] ]:
+			raise Exception( "Cannot register more than one command for this guild with the same name." )
+
+		_commandsSetup[ "guild" ][ _commandMetadata[ "guild" ] ][ commandName ] = _commandMetadata
 	else:
-		_commandsSetup[ "global" ][ function.__name__ ] = _commandMetadata
+		if len( _commandsSetup[ "global" ] ) >= 100:
+			raise Exception( "Cannot have more than 100 global commands." )
+
+		if commandName in _commandsSetup[ "global" ]:
+			raise Exception( "Cannot register more than one command globally with the same name." )
+
+		_commandsSetup[ "global" ][ commandName ] = _commandMetadata
 
 	_commandMetadata = None
 
