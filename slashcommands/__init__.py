@@ -23,12 +23,12 @@ async def _request( endpoint, method = "GET", data = None, files = None ):
 	responseCode = 429
 	while responseCode == 429:
 		if files and data:
-			files = { f"file{ num }": ( file.filename, file.fp ) for num, file in enumerate( files ) }
-			files[ "payload_json" ] = ( None, json.dumps( data ), "application/json" )
-			response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, files = files, headers = authorizationHeader ) )
+			payload = { f"file{ num }": ( file.filename, file.fp ) for num, file in enumerate( files ) }
+			payload[ "payload_json" ] = ( None, json.dumps( data ), "application/json" )
+			response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, files = payload, headers = authorizationHeader ) )
 		elif files and not data:
-			files = { f"file{ num }": ( file.filename, file.fp ) for num, file in enumerate( files ) }
-			response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, files = files, headers = authorizationHeader ) )
+			payload = { f"file{ num }": ( file.filename, file.fp ) for num, file in enumerate( files ) }
+			response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, files = payload, headers = authorizationHeader ) )
 		elif not files and data:
 			response = await _eventLoop.run_in_executor( None, functools.partial( requests.request, method, _API_BASE_URL + endpoint, json = data, headers = authorizationHeader ) )
 		else:
@@ -40,7 +40,10 @@ async def _request( endpoint, method = "GET", data = None, files = None ):
 			retryAfter = response.json()[ "retry_after" ] + 1 # add 1 second to be safe
 			await asyncio.sleep( retryAfter )
 
-	response.raise_for_status()
+	try:
+		response.raise_for_status()
+	except requests.exceptions.HTTPError as httpError:
+		raise requests.exceptions.HTTPError( f"{ httpError.response.status_code } for URL { httpError.request.url }: { httpError.response.text }" )
 
 	if response.text:
 		return response.json()
@@ -215,9 +218,8 @@ class interaction:
 		if self.__hasResponded:
 			raise Exception( "Cannot send another original interaction response, use interaction.followup() instead." )
 
-		# this will work once discord implements attachments in interation responses
-		if optional.get( "files", None ):
-			raise Exception( "Cannot send files in original interaction response (yet), only available for interaction.followup()." )
+		if optional.get( "files", None ) and len( arguments ) <= 0:
+			raise Exception( "Cannot send files in original interaction response without text content being provided." )
 
 		discordEmbeds = optional.get( "embeds", None )
 		jsonDiscordEmbeds = [ embed.to_dict() for embed in discordEmbeds ] if discordEmbeds else None
